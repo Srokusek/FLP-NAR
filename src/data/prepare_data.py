@@ -151,7 +151,7 @@ class GenerateDataset(Dataset):
             
             #store the demand weighted distance and f_costs as initial residuals -> in the dual this is the budget of each client/facility
             dist_w = dist * demands #[n_cli*n_fac, 1] * [n_cli*n_fac, 1] -> [n_cli*n_fac, 1]
-            sample["x"].x = dist_w.unsqueeze(-1) - alpha.repeat((n_fac, 1, 1))
+            sample["x"].x = dist_w.unsqueeze(-1) - alpha.repeat_interleave(n_fac, dim=0)
             sample["y"].x = f_costs.unsqueeze(-1) - torch.sum(beta.view((n_cli, n_fac, t_steps, 1)), dim=0)
 
             sample["x"].dist = dist

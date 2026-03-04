@@ -108,16 +108,64 @@ class Reasoner(nn.Module):
             return nn.functional.binary_cross_entropy_with_logits(pred[mask], target[mask])    
         return nn.functional.binary_cross_entropy_with_logits(pred, target)
 
+    def mask_to_solution(self, batch: HeteroData, masks):
+        #use the mask that was created throughout the algorithm run, not the last prediction (message passing is limited at later stages)
+        open_facilites = masks["opened_facilities"] #[n_fac * B, 1]
+
+        f_costs = batch["y"].f_costs #[n_fac * B, 1]
+        demands = batch["x"].demands #[n_cli * B, 1]
+        dist = batch["x"].dist
+        dist_w = dist * demands #[n_cli * n_fac * B, 1]
+
+        has_batch = hasattr(batch["y"], "batch")
+
+        if has_batch:
+            n_samples = batch["y"].batch.max().item() + 1
+            n_fac = (batch["y"].batch == 0).sum().item()
+            n_cli = (batch["alpha"].batch == 0).sum().item()
+        else:
+            n_samples = 1
+            n_fac = batch["y"].x.shape[0]
+            n_cli = batch["alpha"].x.shape[0]
+
+        opened_facilites_per_sample = open_facilites.squeeze(-1).view(n_samples, n_fac) #[B, n_fac]
+        f_costs_per_sample = f_costs.squeeze(-1).view(n_samples, n_fac) #[B, n_fac]
+        dist_w_per_sample = dist_w.squeeze(-1).view(n_samples, n_cli, n_fac) #[B, n_cli]
+
+        facility_cost = (opened_facilites_per_sample * f_costs_per_sample).sum(dim=1) #[B] -> cost for opened faciliteis for each sample
+
+        open_mask = opened_facilites_per_sample.unsqueeze(1) #[B, 1, n_fac]
+        masked_dist = dist_w_per_sample.clone()
+        masked_dist[open_mask.expand_as(masked_dist) == 0] = float("inf") #set distance as inf for unopened facilities
+
+        #get the minimum distance per client
+        min_dist_per_client = masked_dist.min(dim=2).values #[B, n_cli]
+
+        #whenever no facilites are open -> use max distance
+        #TODO: this is porbably not the best way, as the facility costs would be low and selecting maximum client cost might not be enough to offset thath
+        max_dist_per_client = dist_w_per_sample.max(dim=2).values  # [B, n_cli]
+        min_dist_per_client = torch.where(
+            min_dist_per_client.isinf(),
+            max_dist_per_client,
+            min_dist_per_client
+        )
+
+        client_cost = min_dist_per_client.sum(dim=1)  # [B]
+
+        total_cost = facility_cost + client_cost
+        return total_cost.unsqueeze(-1)  # [B, 1]
+
+
     def convert_to_solution(self, batch: HeteroData, x_pred: torch.Tensor, y_pred: torch.Tensor):
         ##Convert predictions into total cost per sample.
         #Assumes all samples in the batch have the same n_cli and n_fac.
-        y_prob = torch.sigmoid(y_pred).detach()  # [total_fac, 1]
+        y_prob = torch.sigmoid(y_pred).detach()  # [n_fac * B, 1]
         y_binary = (y_prob > 0.5).float()
 
-        f_costs = batch["y"].f_costs  #[total_fac, 1]
-        demands = batch["x"].demands  #[total_x, 1]
+        f_costs = batch["y"].f_costs  #[n_fac * B, 1]
+        demands = batch["x"].demands  #[n_cli * B, 1]
         dist = batch["x"].dist
-        dist_w = dist * demands  #[total_x, 1] where total_x = B * n_cli * n_fac
+        dist_w = dist * demands  #[n_fac * n_cli * B, 1]
 
         has_batch = hasattr(batch["y"], "batch")
 
@@ -262,11 +310,13 @@ class Reasoner(nn.Module):
                     x_tight = (x_res_in.squeeze(-1) < self.eps) & (y_res_for_x < self.eps)  #= client variable is tight and facility is tentatively open
                     client_has_tight = scatter(x_tight.float(), alpha_global_idx, dim=0, reduce='max') > 0  #[total_alpha]
                     masks["active_clients"] = ~client_has_tight[alpha_global_idx]
+                    masks["opened_facilities"] = y_res_in < self.eps
                 else:
                     #simplified version for when the data is not batched, no need for global index mapping etc.
                     tight_connections = ((x_res_in < self.eps) * (y_res_in < self.eps).repeat(n_cli, 1)).view(n_cli, n_fac)
                     frozen_clients = torch.sum(tight_connections, dim=1) > 0
                     masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
+                    masks["opened_facilities"] = y_res_in < self.eps
 
             elif self.tf_prob == 1.0: #use only ground truth, used when tf_prob >= 1
                 x_res_in = x_res_trace[:, t-1, :]
@@ -277,11 +327,12 @@ class Reasoner(nn.Module):
                     x_tight = (x_res_in.squeeze(-1) < self.eps) & (y_res_for_x < self.eps)
                     client_has_tight = scatter(x_tight.float(), alpha_global_idx, dim=0, reduce='max') > 0
                     masks["active_clients"] = ~client_has_tight[alpha_global_idx]
+                    masks["opened_facilities"] = y_res_in < self.eps
                 else:
                     tight_connections = ((x_res_in < self.eps) * (y_res_in < self.eps).repeat(n_cli, 1)).view(n_cli, n_fac)
                     frozen_clients = torch.sum(tight_connections, dim=1) > 0
                     masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
-            
+                    masks["opened_facilities"] = y_res_in < self.eps
             elif not self.training and self.tf_prob < 1.0:
                 #complete trace independent eval/test
                 x_res_in = prev_x_res
@@ -292,10 +343,12 @@ class Reasoner(nn.Module):
                     x_tight = (x_res_in.squeeze(-1) < self.eps) & (y_res_for_x < self.eps)
                     client_has_tight = scatter(x_tight.float(), alpha_global_idx, dim=0, reduce='max') > 0
                     masks["active_clients"] = ~client_has_tight[alpha_global_idx]
+                    masks["opened_facilities"] = y_res_in < self.eps
                 else:
                     tight_connections = ((x_res_in < self.eps) * (y_res_in < self.eps).repeat(n_cli, 1)).view(n_cli, n_fac)
                     frozen_clients = torch.sum(tight_connections, dim=1) > 0
                     masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
+                    masks["opened_facilities"] = y_res_in < self.eps
 
             #encode the node features
             h_x_res, h_y_res = self._encode_node_features(x_res_in, y_res_in)
@@ -340,6 +393,9 @@ class Reasoner(nn.Module):
                     all_y_loss.append(self._bce(preds["y"][y_mask], y_trace[:, t, :][y_mask]))
                     all_x_res_loss.append(self._mse(preds["x_res"][x_mask], x_res_trace[:, t, :][x_mask]))
                     all_y_res_loss.append(self._mse(preds["y_res"][y_mask], y_res_trace[:, t, :][y_mask]))
+
+                prev_x_res = preds["x_res"].detach()
+                prev_y_res = preds["y_res"].detach()
                 
             else:
                 #single-sample
@@ -358,7 +414,6 @@ class Reasoner(nn.Module):
         batch["alpha"].x = alpha_trace
         batch["beta"].x = beta_trace
         batch.delta = delta_trace
-        
         batch["x"].x = x_res_trace
         batch["y"].x = y_res_trace
         batch["x"].trace_sol = x_trace
@@ -374,8 +429,9 @@ class Reasoner(nn.Module):
         y_res_loss = torch.stack(all_y_res_loss).mean()
 
         #compute the optimum gap at the last prediction
-        total_cost = self.convert_to_solution(batch, preds["x"], preds["y"])
-        optimum_diff = (total_cost/batch.optimum).mean()  #mean across batch
+        #total_cost = self.convert_to_solution(batch, preds["x"], preds["y"])
+        total_cost = self.mask_to_solution(batch, masks)
+        optimum_diff = (total_cost / batch.optimum).mean()  #mean across batch
         dual_diff = (total_cost / batch.dual_solution).mean()  #mean across batch
 
         optimum_loss = self._mse(total_cost, batch.optimum) #it's okay to use mse here, since the cost will never be lower than the optimum
