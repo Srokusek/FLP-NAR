@@ -40,6 +40,34 @@ class combined_processor(nn.Module):
         self.norm_x = nn.LayerNorm(hidden_dim)
         self.norm_y = nn.LayerNorm(hidden_dim)
 
+        self.gate_alpha = nn.Sequential(
+            #nn.Linear(hidden_dim * 2, hidden_dim * 2),
+            #nn.Sigmoid(),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Sigmoid()
+        )
+
+        self.gate_beta = nn.Sequential(
+            #nn.Linear(hidden_dim * 2, hidden_dim * 2),
+            #nn.Sigmoid(),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Sigmoid()
+        )
+
+        self.gate_x = nn.Sequential(
+            #nn.Linear(hidden_dim * 2, hidden_dim * 2),
+            #nn.Sigmoid(),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Sigmoid()
+        )
+
+        self.gate_y = nn.Sequential(
+            #nn.Linear(hidden_dim * 2, hidden_dim * 2),
+            #nn.Sigmoid(),
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Sigmoid()
+        )
+
     def forward(self, graph: HeteroData, masks: dict):
         x_dict = graph.x_dict
         edge_index_dict = graph.edge_index_dict
@@ -55,17 +83,26 @@ class combined_processor(nn.Module):
 
         #step 1
         out1 = self.x_to_alpha(x_dict, edge_index_dict)
-        x_dict["alpha"] = self.norm_alpha(x_dict["alpha"] + out1["alpha"])
+        msg_alpha = out1["alpha"]
+        gate_alpha = self.gate_alpha(torch.cat([x_dict["alpha"], msg_alpha], dim=-1))
+        x_dict["alpha"] = self.norm_alpha(x_dict["alpha"] + gate_alpha * msg_alpha)
 
         #step 2
         out2 = self.to_beta(x_dict, edge_index_dict)
-        x_dict["beta"] = self.norm_beta(x_dict["beta"] + out2["beta"])
+        msg_beta = out2["beta"]
+        gate_beta = self.gate_beta(torch.cat([x_dict["beta"], msg_beta], dim=-1))
+        x_dict["beta"] = self.norm_beta(x_dict["beta"] + gate_beta * msg_beta)
 
         #optional dual mixing
         if self.mixing:
             out_mix = self.dual_to_dual(x_dict, edge_index_dict)
-            x_dict["alpha"] = self.norm_alpha(x_dict["alpha"] + out_mix["alpha"])
-            x_dict["beta"] = self.norm_beta(x_dict["beta"] + out_mix["beta"])
+            msg_alpha = out_mix["alpha"]
+            gate_alpha = self.gate_alpha(torch.cat([x_dict["alpha"], msg_alpha], dim=-1))
+            x_dict["alpha"] = self.norm_alpha(x_dict["alpha"] + gate_alpha * msg_alpha)
+
+            msg_beta = out_mix["beta"]
+            gate_beta = self.gate_beta(torch.cat([x_dict["beta"], msg_beta], dim=-1))
+            x_dict["beta"] = self.norm_beta(x_dict["beta"] + gate_beta * msg_beta)
 
         #use min aggregation for alphas and betas to get information related to the delta
         duals_combined = torch.cat([x_dict["alpha"], x_dict["beta"]], dim=0)
@@ -75,8 +112,14 @@ class combined_processor(nn.Module):
 
         #step 3
         out3 = self.out(x_dict, edge_index_dict)
-        x_dict["x"] = self.norm_x(x_dict["x"] + out3["x"])
-        x_dict["y"] = self.norm_y(x_dict["y"] + out3["y"])
+
+        msg_x = out3["x"]
+        gate_x = self.gate_x(torch.cat([x_dict["x"], msg_x], dim=-1))
+        x_dict["x"] = self.norm_x(x_dict["x"] + gate_x * msg_x)
+
+        msg_y = out3["y"]
+        gate_y = self.gate_y(torch.cat([x_dict["y"], msg_y], dim=-1))
+        x_dict["y"] = self.norm_y(x_dict["y"] + gate_y * msg_y)
 
         for key, val in x_dict.items():
             graph[key].x = val
