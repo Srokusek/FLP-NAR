@@ -16,13 +16,13 @@ class Reasoner(nn.Module):
         self.x_res_encoder = nn.Sequential(
             nn.Linear(1, hidden_dim, bias=True),
             nn.LayerNorm(hidden_dim),
-            nn.ReLU()
+            nn.PReLU()
         )
 
         self.y_res_encoder = nn.Sequential(
             nn.Linear(1, hidden_dim, bias=True),
             nn.LayerNorm(hidden_dim),
-            nn.ReLU()
+            nn.PReLU()
         )
 
         self.alpha_init = nn.Parameter(torch.randn(1,hidden_dim) * 0.01)
@@ -42,27 +42,27 @@ class Reasoner(nn.Module):
 
         self.alpha_decoder = nn.Sequential(
             nn.Linear(hidden_dim, 1, bias=True),
-            nn.Softplus()
+            nn.PReLU()
         )
 
         self.beta_decoder = nn.Sequential(
             nn.Linear(hidden_dim, 1, bias=True),
-            nn.Softplus()
+            nn.PReLU()
         )
 
         self.delta_decoder = nn.Sequential(
             nn.Linear(hidden_dim, 1, bias=True),
-            nn.Softplus()
+            nn.PReLU()
         )
 
         self.x_res_decoder = nn.Sequential(
             nn.Linear(hidden_dim, 1, bias=True),
-            nn.Softplus()
+            nn.PReLU()
         )
 
         self.y_res_decoder = nn.Sequential(
             nn.Linear(hidden_dim, 1, bias=True),
-            nn.Softplus()
+            nn.PReLU()
         )
     
     def _encode_node_features(self, x_res_in, y_res_in):
@@ -322,7 +322,7 @@ class Reasoner(nn.Module):
                     masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
                     masks["opened_facilities"] = y_res_in < self.eps
 
-            elif self.tf_prob == 1.0: #use only ground truth, used when tf_prob >= 1
+            elif self.training and self.tf_prob == 1.0: #use only ground truth, used when tf_prob >= 1
                 x_res_in = x_res_trace[:, t-1, :]
                 y_res_in = y_res_trace[:, t-1, :]
                 #frozen client masking
@@ -337,7 +337,8 @@ class Reasoner(nn.Module):
                     frozen_clients = torch.sum(tight_connections, dim=1) > 0
                     masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
                     masks["opened_facilities"] = y_res_in < self.eps
-            elif not self.training and self.tf_prob < 1.0:
+            
+            elif not self.training:
                 #complete trace independent eval/test
                 x_res_in = prev_x_res
                 y_res_in = prev_y_res
