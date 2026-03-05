@@ -15,11 +15,13 @@ class Reasoner(nn.Module):
         #encoders
         self.x_res_encoder = nn.Sequential(
             nn.Linear(1, hidden_dim, bias=True),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU()
         )
 
         self.y_res_encoder = nn.Sequential(
             nn.Linear(1, hidden_dim, bias=True),
+            nn.LayerNorm(hidden_dim),
             nn.ReLU()
         )
 
@@ -71,8 +73,9 @@ class Reasoner(nn.Module):
     def _set_node_features(self, batch, h_x, h_y):
         batch["x"].x = h_x
         batch["y"].x = h_y
-        batch["alpha"].x = self.alpha_init.expand(batch["alpha"].x.shape[0], -1) #learned parametetr
-        batch["beta"].x = self.beta_init.expand(batch["beta"].x.shape[0], -1) #learned parameter
+        if not batch.duals_initialized: #initialize during the first step, then keep from last step
+            batch["alpha"].x = self.alpha_init.expand(batch["alpha"].x.shape[0], -1) #learned parametetr
+            batch["beta"].x = self.beta_init.expand(batch["beta"].x.shape[0], -1) #learned parameter
         return batch
     
     def _decode_step(self, batch):
@@ -215,6 +218,7 @@ class Reasoner(nn.Module):
         T = batch["alpha"].x.shape[1]  #max_T after padding
         n_cli = batch["alpha"].x.shape[0]  #total clients across all samples in batch
         n_fac = batch["y"].x.shape[0]  #total facilities across all samples in batch
+        batch.duals_initialized = False
         
         #get per-sample time lengths for masking
         t_lengths = getattr(batch, 't_lengths', None)
@@ -354,6 +358,9 @@ class Reasoner(nn.Module):
             h_x_res, h_y_res = self._encode_node_features(x_res_in, y_res_in)
             batch = self._set_node_features(batch, h_x_res, h_y_res)
 
+            #the duals are initialized after the first pass
+            batch.duals_initialized = True
+
             #do the processing step, maskingn out edges for frozen clients
             batch = self.processor(batch, masks)
 
@@ -448,3 +455,79 @@ class Reasoner(nn.Module):
             "x_res_loss": x_res_loss,
             "y_res_loss": y_res_loss,
         }
+    
+    @torch.no_grad()
+    def inference(self, batch: HeteroData):
+        #pure inference step, only made to work with non-batched data for simplicity
+
+        T = batch["alpha"].x.shape[1]
+        n_fac = batch["y"].x.shape[0]
+        n_cli = batch["alpha"].x.shape[0]
+        batch.duals_initialized = False
+
+        #collect algorithm traces
+        x_res_trace = batch["x"].x
+        y_res_trace = batch["y"].x
+        x_trace_sol = batch["x"].trace_sol.float()
+        y_trace_sol = batch["y"].trace_sol.float()
+
+        #initial residual state
+        prev_x_res = x_res_trace[:, 0, :]
+        prev_y_res = y_res_trace[:, 0, :]
+
+        masks = {
+            "active_clients": torch.ones(prev_x_res.shape[0], dtype=torch.bool, device=prev_x_res.device),
+            "opened_facilities": torch.zeros(prev_y_res.shape[0], dtype=torch.bool, device=prev_y_res.device),
+        }
+
+        #main loop
+        for t in range(1, T):
+            x_res_in = prev_x_res
+            y_res_in = prev_y_res
+
+            tight_connections = ((x_res_in < self.eps) * (y_res_in < self.eps).repeat(n_cli, 1)).view(n_cli, n_fac)
+            frozen_clients = torch.sum(tight_connections, dim=1) > 0
+            masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
+            masks["opened_facilities"] = y_res_in < self.eps
+
+            #encode
+            h_x_res, h_y_res = self._encode_node_features(x_res_in, y_res_in)
+            batch = self._set_node_features(batch, h_x_res, h_y_res)
+            batch.duals_initialized = True
+
+            #process
+            batch = self.processor(batch, masks)
+
+            #decode
+            preds = self._decode_step(batch)
+
+            #use previous prediction as input in next loop iteration
+            prev_x_res = preds["x_res"]
+            prev_y_res = preds["y_res"]
+
+        #use opened facilities mask to extract solution cost
+        total_cost = self.mask_to_solution(batch, masks)
+
+        #collect results
+        results = {
+            "y_res": prev_y_res.squeeze(-1).cpu().numpy(),
+            "x_res": prev_x_res.squeeze(-1).cpu().numpy(),
+            "y_target": y_trace_sol[:, -1, :].squeeze(-1).cpu().numpy(), #last step in trace
+            "x_target": x_trace_sol[:, -1, :].squeeze(-1).cpu().numpy(),
+            "opened": masks["opened_facilities"].cpu().numpy(),
+            "pred_cost": total_cost.squeeze().item(),
+            "optimum": batch.optimum.squeeze().item(),
+            "dual_bound": batch.dual_solution.squeeze().item(),
+            "opt_ratio": (total_cost/batch.optimum).squeeze().item(),
+            "dual_ratio": (total_cost/batch.dual_solution).squeeze().item(),
+            "n_fac": n_fac,
+            "n_cli": n_cli,
+        }
+
+        #restore sample into original form
+        batch["x"].x = x_res_trace
+        batch["y"].x = y_res_trace
+        batch["x"].trace_sol = x_trace_sol
+        batch["y"].trace_sol = y_trace_sol
+
+        return [results]
