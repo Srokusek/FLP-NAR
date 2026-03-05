@@ -127,43 +127,30 @@ class GenerateDataset(Dataset):
         sample["y", "to", "beta"].edge_index = torch.stack([j_idx, ij_idx])
         sample["beta", "to", "alpha"].edge_index = torch.stack([ij_idx, i_idx])
         sample["alpha", "to", "x"].edge_index = torch.stack([i_idx, ij_idx])
+        sample["beta", "to", "x"].edge_index = torch.stack([ij_idx, ij_idx])
+        sample["alpha", "to", "y"].edge_index = torch.stack([i_idx, j_idx])
 
         sample["alpha"].x = alpha
         sample["beta"].x = beta
 
-        if not self.res_only:
-            sample["x"].x = x
-            sample["y"].x = y
-
-            #add edge attributes
-            sample["alpha", "to", "beta"].edge_attr = dist
-            sample["beta", "to", "alpha"].edge_attr = dist
-
-            #store demands and f_costs for encoding
-            sample["x"].demands = demands
-            sample["y"].f_costs = f_costs
-
-            return sample
+        sample["x"].trace_sol = x
+        sample["y"].trace_sol = y
         
-        else:
-            sample["x"].trace_sol = x
-            sample["y"].trace_sol = y
-            
-            #store the demand weighted distance and f_costs as initial residuals -> in the dual this is the budget of each client/facility
-            dist_w = dist * demands #[n_cli*n_fac, 1] * [n_cli*n_fac, 1] -> [n_cli*n_fac, 1]
-            sample["x"].x = dist_w.unsqueeze(-1) - alpha.repeat_interleave(n_fac, dim=0)
-            sample["y"].x = f_costs.unsqueeze(-1) - torch.sum(beta.view((n_cli, n_fac, t_steps, 1)), dim=0)
+        #store the demand weighted distance and f_costs as initial residuals -> in the dual this is the budget of each client/facility
+        dist_w = dist * demands #[n_cli*n_fac, 1] * [n_cli*n_fac, 1] -> [n_cli*n_fac, 1]
+        sample["x"].x = dist_w.unsqueeze(-1) - alpha.repeat_interleave(n_fac, dim=0)
+        sample["y"].x = f_costs.unsqueeze(-1) - torch.sum(beta.view((n_cli, n_fac, t_steps, 1)), dim=0)
 
-            sample["x"].dist = dist
-            sample["x"].demands = demands
-            sample["y"].f_costs = f_costs
+        sample["x"].dist = dist
+        sample["x"].demands = demands
+        sample["y"].f_costs = f_costs
 
-            #in this variation, no edge_attributes are necessary as distance is stored within the x node
+        #in this variation, no edge_attributes are necessary as distance is stored within the x node
 
-            #TODO: possible future improvement would be to add some other features, 
-            #like degree to inform the network about between how many possible connections to split the residual budget
+        #TODO: possible future improvement would be to add some other features, 
+        #like degree to inform the network about between how many possible connections to split the residual budget
 
-            return sample
+        return sample
     
     def process_sample_res_inupts(self, sample: TrainingSample):
         #method for creating a dataset that is suited to have the residual (not the primals) as inputs and takes no duals as input
