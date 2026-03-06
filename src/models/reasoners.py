@@ -158,59 +158,6 @@ class Reasoner(nn.Module):
         total_cost = facility_cost + client_cost
         return total_cost.unsqueeze(-1)  # [B, 1]
 
-
-    def convert_to_solution(self, batch: HeteroData, x_pred: torch.Tensor, y_pred: torch.Tensor):
-        ##Convert predictions into total cost per sample.
-        #Assumes all samples in the batch have the same n_cli and n_fac.
-        y_prob = torch.sigmoid(y_pred).detach()  # [n_fac * B, 1]
-        y_binary = (y_prob > 0.5).float()
-
-        f_costs = batch["y"].f_costs  #[n_fac * B, 1]
-        demands = batch["x"].demands  #[n_cli * B, 1]
-        dist = batch["x"].dist
-        dist_w = dist * demands  #[n_fac * n_cli * B, 1]
-
-        has_batch = hasattr(batch["y"], "batch")
-
-        if has_batch:
-            n_samples = batch["y"].batch.max().item() + 1
-            n_fac = (batch["y"].batch == 0).sum().item()
-            n_cli = (batch["alpha"].batch == 0).sum().item()
-        else:
-            n_samples = 1
-            n_fac = batch["y"].x.shape[0]
-            n_cli = batch["alpha"].x.shape[0]
-
-        #reshape to [B, n_fac] and [B, n_cli, n_fac]
-        y_binary_per_sample = y_binary.squeeze(-1).view(n_samples, n_fac)  #[B, n_fac]
-        f_costs_per_sample = f_costs.squeeze(-1).view(n_samples, n_fac)  #[B, n_fac]
-        dist_w_per_sample = dist_w.squeeze(-1).view(n_samples, n_cli, n_fac)  #[B, n_cli, n_fac]
-
-        #facility cost
-        facility_cost = (y_binary_per_sample * f_costs_per_sample).sum(dim=1)  #[B]
-
-        #client assignment: for each client, find min distance to an OPEN facility
-        #mask closed facilities with inf
-        open_mask = y_binary_per_sample.unsqueeze(1)  #[B, 1, n_fac]
-        masked_dist = dist_w_per_sample.clone()
-        masked_dist[open_mask.expand_as(masked_dist) == 0] = float("inf")
-
-        #min distance per client
-        min_dist_per_client = masked_dist.min(dim=2).values  # [B, n_cli]
-
-        #handle case where no facility is open - use max distance as penalty
-        max_dist_per_client = dist_w_per_sample.max(dim=2).values  # [B, n_cli]
-        min_dist_per_client = torch.where(
-            min_dist_per_client.isinf(),
-            max_dist_per_client,
-            min_dist_per_client
-        )
-
-        client_cost = min_dist_per_client.sum(dim=1)  # [B]
-
-        total_cost = facility_cost + client_cost
-        return total_cost.unsqueeze(-1)  # [B, 1]
-
     def teacher_forcing(self, batch: HeteroData) -> dict:
         ###do T-1 steps with fuzzy teacher input
 
@@ -418,6 +365,10 @@ class Reasoner(nn.Module):
                 prev_x_res = preds["x_res"].detach()
                 prev_y_res = preds["y_res"].detach()
 
+        #masking after last time-step
+        #masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
+        masks["opened_facilities"] = y_res_in < self.eps
+
         #restore original state of data
         batch["alpha"].x = alpha_trace
         batch["beta"].x = beta_trace
@@ -515,7 +466,9 @@ class Reasoner(nn.Module):
             "x_res": prev_x_res.squeeze(-1).cpu().numpy(),
             "y_target": y_trace_sol[:, -1, :].squeeze(-1).cpu().numpy(), #last step in trace
             "x_target": x_trace_sol[:, -1, :].squeeze(-1).cpu().numpy(),
-            "opened": masks["opened_facilities"].cpu().numpy(),
+            "x_res_target": x_res_trace[:, -1, :].squeeze(-1).cpu().numpy(),
+            "y_res_target": y_res_trace[:, -1, :].squeeze(-1).cpu().numpy(),
+            "opened": (y_res_in < self.eps).cpu().numpy(),
             "pred_cost": total_cost.squeeze().item(),
             "optimum": batch.optimum.squeeze().item(),
             "dual_bound": batch.dual_solution.squeeze().item(),
