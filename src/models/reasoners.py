@@ -367,7 +367,7 @@ class Reasoner(nn.Module):
 
         #masking after last time-step
         #masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
-        masks["opened_facilities"] = y_res_in < self.eps
+        masks["opened_facilities"] = prev_y_res < self.eps
 
         #restore original state of data
         batch["alpha"].x = alpha_trace
@@ -457,6 +457,8 @@ class Reasoner(nn.Module):
             prev_x_res = preds["x_res"]
             prev_y_res = preds["y_res"]
 
+        masks["opened_facilities"] = prev_y_res < self.eps
+
         #use opened facilities mask to extract solution cost
         total_cost = self.mask_to_solution(batch, masks)
 
@@ -468,7 +470,7 @@ class Reasoner(nn.Module):
             "x_target": x_trace_sol[:, -1, :].squeeze(-1).cpu().numpy(),
             "x_res_target": x_res_trace[:, -1, :].squeeze(-1).cpu().numpy(),
             "y_res_target": y_res_trace[:, -1, :].squeeze(-1).cpu().numpy(),
-            "opened": (y_res_in < self.eps).cpu().numpy(),
+            "opened": (prev_y_res < self.eps).cpu().numpy(),
             "pred_cost": total_cost.squeeze().item(),
             "optimum": batch.optimum.squeeze().item(),
             "dual_bound": batch.dual_solution.squeeze().item(),

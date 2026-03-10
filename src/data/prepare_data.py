@@ -130,6 +130,10 @@ class GenerateDataset(Dataset):
         sample["beta", "to", "x"].edge_index = torch.stack([ij_idx, ij_idx])
         sample["alpha", "to", "y"].edge_index = torch.stack([i_idx, j_idx])
 
+        #res to res connections
+        sample["x", "to", "y"].edge_index = torch.stack([ij_idx, j_idx])
+        sample["y", "to", "x"].edge_index = torch.stack([j_idx, ij_idx])
+
         sample["alpha"].x = alpha
         sample["beta"].x = beta
 

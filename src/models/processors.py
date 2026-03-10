@@ -8,29 +8,30 @@ class combined_processor(nn.Module):
         super().__init__()
 
         self.mixing = mixing
+        aggregation = aggr.MultiAggregation(["min", "max"])
 
         #step 1: x_res to alpha
         self.x_to_alpha = HeteroConv({
-            ("x", "to", "alpha"): SAGEConv(hidden_dim, hidden_dim, aggr="sum"),
+            ("x", "to", "alpha"): SAGEConv(hidden_dim, hidden_dim, aggr=aggr.MultiAggregation(["min", "sum"])),
         })
 
         #step 2: alpha + y to beta
         self.to_beta = HeteroConv({
-            ("alpha", "to", "beta"): SAGEConv(hidden_dim, hidden_dim, aggr="sum"),
-            ("y", "to", "beta"): SAGEConv(hidden_dim, hidden_dim, aggr="sum"),
+            ("alpha", "to", "beta"): SAGEConv(hidden_dim, hidden_dim, aggr="mean"),
+            ("y", "to", "beta"): SAGEConv(hidden_dim, hidden_dim, aggr="mean"),
         })
 
         #optional dual mixing
         self.dual_to_dual = HeteroConv({
-            ("alpha", "to", "beta"): SAGEConv(hidden_dim, hidden_dim, aggr="sum"),
-            ("beta", "to", "alpha"): SAGEConv(hidden_dim, hidden_dim, aggr="sum")
+            ("alpha", "to", "beta"): SAGEConv(hidden_dim, hidden_dim, aggr=aggregation),
+            ("beta", "to", "alpha"): SAGEConv(hidden_dim, hidden_dim, aggr=aggregation)
         })
 
         #step 3: alpha + beta to x, beta to y
         self.out = HeteroConv({
-            ("alpha", "to", "x"): SAGEConv((hidden_dim, hidden_dim), hidden_dim, aggr="sum"),
-            ("beta", "to", "x"): SAGEConv((hidden_dim, hidden_dim), hidden_dim, aggr="sum"),
-            ("beta", "to", "y"): SAGEConv((hidden_dim, hidden_dim), hidden_dim, aggr="sum"),
+            ("alpha", "to", "x"): SAGEConv((hidden_dim, hidden_dim), hidden_dim, aggr="mean"),
+            ("beta", "to", "x"): SAGEConv((hidden_dim, hidden_dim), hidden_dim, aggr=aggr.MultiAggregation(["min", "sum"])),
+            ("beta", "to", "y"): SAGEConv((hidden_dim, hidden_dim), hidden_dim, aggr=aggr.MultiAggregation(["min", "sum"])),
         })
 
         self.dual_pool = aggr.MinAggregation()
@@ -68,25 +69,33 @@ class combined_processor(nn.Module):
             nn.Sigmoid()
         )
 
-        self.post_alpha = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.PReLU()
-        )
+        def dummy(_in):
+            return _in
 
-        self.post_beta = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.PReLU()
-        )
+        self.post_alpha = dummy
+        self.post_beta = dummy
+        self.post_y = dummy
+        self.post_x = dummy
 
-        self.post_x = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.PReLU()
-        )
+        # self.post_alpha = nn.Sequential(
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.PReLU()
+        # )
 
-        self.post_y = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.PReLU()
-        )
+        # self.post_beta = nn.Sequential(
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.PReLU()
+        # )
+
+        # self.post_x = nn.Sequential(
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.PReLU()
+        # )
+
+        # self.post_y = nn.Sequential(
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.PReLU()
+        # )
 
     def forward(self, graph: HeteroData, masks: dict):
         x_dict = graph.x_dict
@@ -145,6 +154,39 @@ class combined_processor(nn.Module):
             graph[key].x = val
 
         return graph
+
+class simple_processor(nn.Module):
+    def __init__(self, hidden_dim):
+        super().__init__()
+
+        #step 1: x_res to y_res
+        self.x_to_y = HeteroConv({
+            ("x", "to", "y"): SAGEConv(hidden_dim, hidden_dim, aggr=aggr.MultiAggregation(["min", "sum"])),
+        })
+
+        #step 2: y_res to x_res
+        self.y_to_x = HeteroConv({
+            ("y", "to", "x"): SAGEConv(hidden_dim, hidden_dim, aggr="sum") #aggregation is not as impartant since the connection is always one-to-one
+        })
+
+        #delta pooling
+        self.delta_pool = aggr.MinAggregation
+
+        self.gate_x = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Sigmoid()
+        )
+
+        self.gate_y = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Sigmoid()
+        )
+
+    def forward(self, graph: HeteroData, masks: dict):
+        x_dict = graph.x_dict
+        edge_index_dict = graph.edge_index_dict
+
+        
 
 class processor(nn.Module):
     def __init__(self, hidden_dim, mixing: bool = True):
