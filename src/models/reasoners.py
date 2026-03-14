@@ -260,14 +260,14 @@ class Reasoner(nn.Module):
                     y_res_for_x = y_res_in.squeeze(-1)[y_global_idx]  #[total_x]
                     x_tight = (x_res_in.squeeze(-1) < self.eps) & (y_res_for_x < self.eps)  #= client variable is tight and facility is tentatively open
                     client_has_tight = scatter(x_tight.float(), alpha_global_idx, dim=0, reduce='max') > 0  #[total_alpha]
-                    masks["active_clients"] = ~client_has_tight[alpha_global_idx]
-                    masks["opened_facilities"] = y_res_in < self.eps
+                    masks["active_clients"] = masks["active_clients"] * (~client_has_tight[alpha_global_idx])
+                    masks["opened_facilities"] = masks["opened_facilities"] | (y_res_in < self.eps).squeeze(-1)
                 else:
                     #simplified version for when the data is not batched, no need for global index mapping etc.
                     tight_connections = ((x_res_in < self.eps) * (y_res_in < self.eps).repeat(n_cli, 1)).view(n_cli, n_fac)
                     frozen_clients = torch.sum(tight_connections, dim=1) > 0
-                    masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
-                    masks["opened_facilities"] = y_res_in < self.eps
+                    masks["active_clients"] = masks["active_clients"] * (~frozen_clients.repeat_interleave(n_fac))
+                    masks["opened_facilities"] = masks["opened_facilities"] | (y_res_in < self.eps).squeeze(-1)
 
             elif self.training and self.tf_prob == 1.0: #use only ground truth, used when tf_prob >= 1
                 x_res_in = x_res_trace[:, t-1, :]
@@ -277,13 +277,13 @@ class Reasoner(nn.Module):
                     y_res_for_x = y_res_in.squeeze(-1)[y_global_idx]
                     x_tight = (x_res_in.squeeze(-1) < self.eps) & (y_res_for_x < self.eps)
                     client_has_tight = scatter(x_tight.float(), alpha_global_idx, dim=0, reduce='max') > 0
-                    masks["active_clients"] = ~client_has_tight[alpha_global_idx]
-                    masks["opened_facilities"] = y_res_in < self.eps
+                    masks["active_clients"] = masks["active_clients"] * (~client_has_tight[alpha_global_idx])
+                    masks["opened_facilities"] = masks["opened_facilities"] | (y_res_in < self.eps).squeeze(-1)
                 else:
                     tight_connections = ((x_res_in < self.eps) * (y_res_in < self.eps).repeat(n_cli, 1)).view(n_cli, n_fac)
                     frozen_clients = torch.sum(tight_connections, dim=1) > 0
-                    masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
-                    masks["opened_facilities"] = y_res_in < self.eps
+                    masks["active_clients"] = masks["active_clients"] * (~frozen_clients.repeat_interleave(n_fac))
+                    masks["opened_facilities"] = masks["opened_facilities"] | (y_res_in < self.eps).squeeze(-1)
             
             elif not self.training:
                 #complete trace independent eval/test
@@ -294,13 +294,13 @@ class Reasoner(nn.Module):
                     y_res_for_x = y_res_in.squeeze(-1)[y_global_idx]
                     x_tight = (x_res_in.squeeze(-1) < self.eps) & (y_res_for_x < self.eps)
                     client_has_tight = scatter(x_tight.float(), alpha_global_idx, dim=0, reduce='max') > 0
-                    masks["active_clients"] = ~client_has_tight[alpha_global_idx]
-                    masks["opened_facilities"] = y_res_in < self.eps
+                    masks["active_clients"] = masks["active_clients"] * ~client_has_tight[alpha_global_idx]
+                    masks["opened_facilities"] = masks["opened_facilities"] | (y_res_in < self.eps).squeeze(-1)
                 else:
                     tight_connections = ((x_res_in < self.eps) * (y_res_in < self.eps).repeat(n_cli, 1)).view(n_cli, n_fac)
                     frozen_clients = torch.sum(tight_connections, dim=1) > 0
-                    masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
-                    masks["opened_facilities"] = y_res_in < self.eps
+                    masks["active_clients"] = masks["active_clients"] * (~frozen_clients.repeat_interleave(n_fac))
+                    masks["opened_facilities"] = masks["opened_facilities"] | (y_res_in < self.eps).squeeze(-1)
 
             #encode the node features
             h_x_res, h_y_res = self._encode_node_features(x_res_in, y_res_in)
@@ -367,7 +367,7 @@ class Reasoner(nn.Module):
 
         #masking after last time-step
         #masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
-        masks["opened_facilities"] = prev_y_res < self.eps
+        masks["opened_facilities"] = masks["opened_facilities"] | (prev_y_res < self.eps).squeeze(-1)
 
         #restore original state of data
         batch["alpha"].x = alpha_trace
@@ -439,8 +439,8 @@ class Reasoner(nn.Module):
 
             tight_connections = ((x_res_in < self.eps) * (y_res_in < self.eps).repeat(n_cli, 1)).view(n_cli, n_fac)
             frozen_clients = torch.sum(tight_connections, dim=1) > 0
-            masks["active_clients"] = ~frozen_clients.repeat_interleave(n_fac)
-            masks["opened_facilities"] = y_res_in < self.eps
+            masks["active_clients"] = masks["active_clients"] * (~frozen_clients.repeat_interleave(n_fac))
+            masks["opened_facilities"] = masks["opened_facilities"] | (y_res_in < self.eps).squeeze(-1)
 
             #encode
             h_x_res, h_y_res = self._encode_node_features(x_res_in, y_res_in)
@@ -457,7 +457,10 @@ class Reasoner(nn.Module):
             prev_x_res = preds["x_res"]
             prev_y_res = preds["y_res"]
 
-        masks["opened_facilities"] = prev_y_res < self.eps
+        tight_connections = ((prev_x_res < self.eps) * (prev_y_res < self.eps).repeat(n_cli, 1)).view(n_cli, n_fac)
+        frozen_clients = torch.sum(tight_connections, dim=1) > 0
+        masks["active_clients"] = masks["active_clients"] * (~frozen_clients.repeat_interleave(n_fac))
+        masks["opened_facilities"] = masks["opened_facilities"] | (prev_y_res < self.eps).squeeze(-1)
 
         #use opened facilities mask to extract solution cost
         total_cost = self.mask_to_solution(batch, masks)
@@ -470,7 +473,7 @@ class Reasoner(nn.Module):
             "x_target": x_trace_sol[:, -1, :].squeeze(-1).cpu().numpy(),
             "x_res_target": x_res_trace[:, -1, :].squeeze(-1).cpu().numpy(),
             "y_res_target": y_res_trace[:, -1, :].squeeze(-1).cpu().numpy(),
-            "opened": (prev_y_res < self.eps).cpu().numpy(),
+            "opened": masks["opened_facilities"].cpu().numpy(),
             "pred_cost": total_cost.squeeze().item(),
             "optimum": batch.optimum.squeeze().item(),
             "dual_bound": batch.dual_solution.squeeze().item(),
@@ -478,6 +481,7 @@ class Reasoner(nn.Module):
             "dual_ratio": (total_cost/batch.dual_solution).squeeze().item(),
             "n_fac": n_fac,
             "n_cli": n_cli,
+            "masks": masks,
         }
 
         #restore sample into original form
