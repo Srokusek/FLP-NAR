@@ -1,9 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 from typing import Tuple, Callable, Dict
 import torch
-
-
 
 @dataclass
 class DualSolution:
@@ -40,6 +38,12 @@ class JVTrace:
     final_solution: UncapSolution
 
 @dataclass
+class TestSample:
+    instance: UncapInstance
+    exact: UncapSolution
+    jv: UncapSolution
+
+@dataclass
 class TrainingSample:
     instance: UncapInstance
     primal: UncapSolution
@@ -60,6 +64,46 @@ class UncapGeneratorConfig:
     demand_config: DistributionConfig
     facility_cost_config: DistributionConfig
     coords_config: DistributionConfig
+    distance_calculation: str = "euclidean"
+
+
+#loss scheduling functions
+def limited_ramp_down(max_epoch=50):
+    def fn(e):
+        return max((max_epoch - e) / max_epoch, 0.5)
+    return fn
+
+def ramp_down(max_epoch=50):
+    def fn(e):
+        return max((max_epoch - e) / max_epoch, 0.2)
+    return fn
+
+@dataclass
+class LossConfig:
+    weights: dict = field(default_factory=lambda :{
+        "alpha_loss": 0.5, "beta_loss": 0.5, "x_loss": 0.5,
+        "y_loss": 0.5, "delta_loss": 1.0, "x_res_loss": 2.0,
+        "y_res_loss": 2.0, "optimum_loss": 0.1, "optimum_diff": 0.0, "dual_diff": 0.0,
+    })
+
+    schedulers: dict = field(default_factory={
+        "alpha_loss": ramp_down(150),
+        "beta_loss": ramp_down(150),
+        "x_loss": ramp_down(150),
+        "y_loss": ramp_down(150),
+        "delta_loss": ramp_down(150),
+        "x_res_loss": ramp_down(150),
+        "y_res_loss": ramp_down(150),
+    })
+
+    tf_end: int = 150
+
+    def get_weights(self, epoch: int) -> dict:
+        w = self.weights.copy()
+        for k, scheduler in self.schedulers.items():
+            if k in w:
+                w[k] = scheduler(epoch)
+        return w
 
 @dataclass
 class UniformConfig(DistributionConfig):
@@ -70,6 +114,10 @@ class UniformConfig(DistributionConfig):
 class NormalConfig(DistributionConfig):
     mean: float
     std: float
+
+@dataclass
+class ConstantConfig(DistributionConfig):
+    value: float
 
 @dataclass
 class ExponentialConfig(DistributionConfig):
@@ -97,7 +145,16 @@ def _create_normal_generator(config: NormalConfig) -> DistributionConfig:
     
     return generator
 
+def _create_constant_generator(config: ConstantConfig) -> DistributionConfig:
+    value = config.value
+
+    def generator(size: int, rng: np.random.Generator, precision=np.float32) -> np.ndarray:
+        return np.full(shape=size, fill_value=value, dtype=precision)
+    
+    return generator
+
 GENERATOR_FACTORIES: Dict[type, Callable[[DistributionConfig], DistributionGenerator]] = {
     UniformConfig: _create_uniform_generator,
     NormalConfig: _create_normal_generator,
+    ConstantConfig: _create_constant_generator,
 }

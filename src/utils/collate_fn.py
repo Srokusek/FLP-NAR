@@ -78,3 +78,10 @@ def collate_fn(batch):
     batched.max_T = max_T
 
     return batched 
+
+def test_collate_fn(batch):
+    #colalte function made especially to work with test samples (no padding needed, only passing one sample within a batch)
+    if isinstance(batch, list):
+        if len(batch) != 1:
+            raise ValueError(f"test_collate_fn expects batch_size=1, got {len(batch)}")
+    return batch[0]

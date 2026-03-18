@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch_geometric
 from torch_geometric.data import HeteroData
 from torch_geometric.utils import scatter
+import time
 
 from .processors import processor
 
@@ -101,6 +102,17 @@ class Reasoner(nn.Module):
         return nn.functional.mse_loss(pred, target)
     
     @staticmethod
+    def _smoothl1(pred, target, mask=None):
+        #ensure shapes match: squeeze pred if [N,1] vs target [N]
+        if pred.dim() > target.dim():
+            pred = pred.squeeze(-1)
+        elif target.dim() > pred.dim():
+            target = target.squeeze(-1)
+        if mask is not None and mask.sum() > 0:
+            return nn.functional.smooth_l1_loss(pred[mask], target[mask])
+        return nn.functional.smooth_l1_loss(pred, target)
+    
+    @staticmethod
     def _bce(pred, target, mask=None):
         #ensure shapes match: squeeze if needed
         if pred.dim() > target.dim():
@@ -142,7 +154,7 @@ class Reasoner(nn.Module):
         masked_dist[open_mask.expand_as(masked_dist) == 0] = float("inf") #set distance as inf for unopened facilities
 
         #get the minimum distance per client
-        min_dist_per_client = masked_dist.min(dim=2).values #[B, n_cli]
+        min_dist_per_client, assignment = masked_dist.min(dim=2)#[B, n_cli]
 
         #whenever no facilites are open -> use max distance
         #TODO: this is porbably not the best way, as the facility costs would be low and selecting maximum client cost might not be enough to offset thath
@@ -156,7 +168,56 @@ class Reasoner(nn.Module):
         client_cost = min_dist_per_client.sum(dim=1)  # [B]
 
         total_cost = facility_cost + client_cost
-        return total_cost.unsqueeze(-1)  # [B, 1]
+        return total_cost.unsqueeze(-1), assignment  # [B, 1]
+
+    def repaired_mask_to_solution(self, batch: HeteroData, masks):
+        #solution cost computation which implements a simple repair algorithm,
+        #which prevents opening facilities to which no clients get assigned to
+        #Only works with single batched data for simplicity
+        
+        open_facilites = masks["opened_facilities"] #[n_fac, 1]
+
+        f_costs = batch["y"].f_costs #[n_fac, 1]
+        demands = batch["x"].demands #[n_cli, 1]
+        dist = batch["x"].dist
+        dist_w = dist * demands #[n_cli * n_fac, 1]
+
+        n_samples = 1
+        n_fac = batch["y"].x.shape[0]
+        n_cli = batch["alpha"].x.shape[0]
+
+        opened_facilites_per_sample = open_facilites.squeeze(-1).view(n_samples, n_fac) #[1, n_fac]
+        f_costs_per_sample = f_costs.squeeze(-1).view(n_samples, n_fac) #[1, n_fac]
+        dist_w_per_sample = dist_w.squeeze(-1).view(n_samples, n_cli, n_fac) #[1 , n_cli]
+
+        open_mask = opened_facilites_per_sample.unsqueeze(1) #[B, 1, n_fac]
+        masked_dist = dist_w_per_sample.clone()
+        masked_dist[open_mask.expand_as(masked_dist) == 0] = float("inf") #set distance as inf for unopened facilities
+
+        #get the minimum distance per client
+        min_dist_per_client, assignment = masked_dist.min(dim=2)#[B, n_cli]
+
+        #whenever no facilites are open -> use max distance
+        #TODO: this is porbably not the best way, as the facility costs would be low and selecting maximum client cost might not be enough to offset thath
+        max_dist_per_client = dist_w_per_sample.max(dim=2).values  # [B, n_cli]
+        min_dist_per_client = torch.where(
+            min_dist_per_client.isinf(),
+            max_dist_per_client,
+            min_dist_per_client
+        )
+
+        client_cost = min_dist_per_client.sum(dim=1)  # [B]
+
+        valid_client = ~min_dist_per_client.isinf()
+        assigned_facilities = torch.zeros_like(opened_facilites_per_sample, dtype=torch.bool)
+        assigned_facilities.scatter_(1, assignment, valid_client)
+
+        opened_facilites_per_sample = opened_facilites_per_sample.bool() & assigned_facilities
+
+        facility_cost = (opened_facilites_per_sample * f_costs_per_sample).sum(dim=1) #[1] cost for opened faciliteis for each sample
+
+        total_cost = facility_cost + client_cost
+        return total_cost.unsqueeze(-1), assignment, opened_facilites_per_sample  # [B, 1]
 
     def teacher_forcing(self, batch: HeteroData) -> dict:
         ###do T-1 steps with fuzzy teacher input
@@ -389,12 +450,12 @@ class Reasoner(nn.Module):
 
         #compute the optimum gap at the last prediction
         #total_cost = self.convert_to_solution(batch, preds["x"], preds["y"])
-        total_cost = self.mask_to_solution(batch, masks)
+        total_cost, _ = self.mask_to_solution(batch, masks)
         optimum_diff = (total_cost / batch.optimum).mean()  #mean across batch
         dual_diff = (total_cost / batch.dual_solution).mean()  #mean across batch
 
-        optimum_loss = self._mse(total_cost, batch.optimum) #it's okay to use mse here, since the cost will never be lower than the optimum
-
+        #optimum_loss = self._mse(total_cost, batch.optimum) #it's okay to use mse here, since the cost will never be lower than the optimum
+        optimum_loss = self._smoothl1(total_cost, batch.optimum) #it's okay to use mse here, since the cost will never be lower than the optimum
         return {
             "alpha_loss": alpha_loss,
             "beta_loss": beta_loss,
@@ -409,19 +470,19 @@ class Reasoner(nn.Module):
         }
     
     @torch.no_grad()
-    def inference(self, batch: HeteroData):
+    def inference(self, batch: HeteroData, repair: bool = False):
         #pure inference step, only made to work with non-batched data for simplicity
 
-        T = batch["alpha"].x.shape[1]
+        #T = batch["alpha"].x.shape[1]
+        t0 = time.time()
         n_fac = batch["y"].x.shape[0]
         n_cli = batch["alpha"].x.shape[0]
+        t = 0 #introduce to prevent getting stuck in inference
         batch.duals_initialized = False
 
         #collect algorithm traces
         x_res_trace = batch["x"].x
         y_res_trace = batch["y"].x
-        x_trace_sol = batch["x"].trace_sol.float()
-        y_trace_sol = batch["y"].trace_sol.float()
 
         #initial residual state
         prev_x_res = x_res_trace[:, 0, :]
@@ -433,7 +494,9 @@ class Reasoner(nn.Module):
         }
 
         #main loop
-        for t in range(1, T):
+        #for t in range(1, T):
+        while torch.any(masks["active_clients"]) and t <= n_fac:
+            t += 1
             x_res_in = prev_x_res
             y_res_in = prev_y_res
 
@@ -463,31 +526,38 @@ class Reasoner(nn.Module):
         masks["opened_facilities"] = masks["opened_facilities"] | (prev_y_res < self.eps).squeeze(-1)
 
         #use opened facilities mask to extract solution cost
-        total_cost = self.mask_to_solution(batch, masks)
+        if repair:
+            total_cost, pred_assignment, repaired_opened_facilities = self.repaired_mask_to_solution(batch, masks)
+        else:
+            total_cost, pred_assignment = self.mask_to_solution(batch, masks)
+
+        solution_time = time.time() - t0
 
         #collect results
         results = {
             "y_res": prev_y_res.squeeze(-1).cpu().numpy(),
             "x_res": prev_x_res.squeeze(-1).cpu().numpy(),
-            "y_target": y_trace_sol[:, -1, :].squeeze(-1).cpu().numpy(), #last step in trace
-            "x_target": x_trace_sol[:, -1, :].squeeze(-1).cpu().numpy(),
-            "x_res_target": x_res_trace[:, -1, :].squeeze(-1).cpu().numpy(),
-            "y_res_target": y_res_trace[:, -1, :].squeeze(-1).cpu().numpy(),
+            "y_target": batch.sample.exact.open_facilities,
+            "x_target": batch.sample.exact.client_assignment,
+            "x_res_target": batch.sample.jv.client_assignment,
+            "y_res_target": batch.sample.jv.open_facilities,
             "opened": masks["opened_facilities"].cpu().numpy(),
+            "repaired_opened": repaired_opened_facilities.cpu().numpy()[0] if repair else None,
+            "assignment": pred_assignment.cpu().numpy(),
             "pred_cost": total_cost.squeeze().item(),
-            "optimum": batch.optimum.squeeze().item(),
-            "dual_bound": batch.dual_solution.squeeze().item(),
-            "opt_ratio": (total_cost/batch.optimum).squeeze().item(),
-            "dual_ratio": (total_cost/batch.dual_solution).squeeze().item(),
+            "optimum": batch.sample.exact.total_cost,
+            "dual_bound": batch.sample.jv.total_cost,
+            "opt_ratio": (total_cost/batch.sample.exact.total_cost).squeeze().item(),
+            "dual_ratio": (total_cost/batch.sample.jv.total_cost).squeeze().item(),
             "n_fac": n_fac,
             "n_cli": n_cli,
             "masks": masks,
+            "solution_time": solution_time,
+            "test_sample": batch.sample,
         }
 
         #restore sample into original form
         batch["x"].x = x_res_trace
         batch["y"].x = y_res_trace
-        batch["x"].trace_sol = x_trace_sol
-        batch["y"].trace_sol = y_trace_sol
 
         return [results]

@@ -15,6 +15,9 @@ def _pairwise_dist(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     diff = a[:, None, :] - b[None, :, :]
     return np.sqrt((diff ** 2).sum(axis=-1))
 
+def _random_dist(n_cli, n_fac, rng) -> np.ndarray:
+    return rng.random((n_cli, n_fac), dtype=np.float32)
+
 def generate_uncap_instance(config: UncapGeneratorConfig) -> UncapInstance:
     rng = np.random.default_rng(config.seed)
 
@@ -28,7 +31,12 @@ def generate_uncap_instance(config: UncapGeneratorConfig) -> UncapInstance:
     demands = demand_gen(config.n_cli, rng)
     facility_costs = cost_gen(config.n_fac, rng)
     
-    dist_matrix = _pairwise_dist(client_coords, facility_coords).astype(np.float32)
+    if config.distance_calculation == "euclidean":
+        dist_matrix = _pairwise_dist(client_coords, facility_coords).astype(np.float32)
+    elif config.distance_calculation == "random":
+        dist_matrix = _random_dist(n_cli=config.n_cli, n_fac=config.n_fac, rng=rng)
+    else:
+        raise ValueError(f"selected distance calculation: {config.distance_calculation} is not implemented, use one of: [euclidean, random]")
 
     return UncapInstance(
         facility_coords=facility_coords,

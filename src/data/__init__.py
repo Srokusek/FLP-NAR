@@ -17,10 +17,3 @@ from .data import (
 from .prepare_data import (
     GenerateDataset
 )
-
-__all__ = [
-    "KMedianInstance",
-    "UncapInstance",
-    "generate_uncap_instance",
-    "generate_kmedian_instance",
-]

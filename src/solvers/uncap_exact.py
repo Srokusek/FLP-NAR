@@ -76,6 +76,88 @@ def solve_uncap_exact(problem: UncapInstance, solver: str = "glpk") -> UncapSolu
         solve_time=result["Solver"][0]["Time"]
     )
 
+def solve_uncap_warmstart(problem: UncapInstance, pred_opened: np.ndarray, pred_assignment: np.ndarray, solver: str = "glpk"):
+    dist = np.asarray(problem.dist_matrix, dtype=np.float64)
+    demands = np.asarray(problem.demands, dtype=np.float64)
+    facility_costs = np.asarray(problem.facility_costs, dtype=np.float64)
+    n_cli, n_fac = dist.shape
+
+    model = pyo.ConcreteModel()
+
+    #convert dist to dict-like format
+    dist_dict = {
+        (i, j): dist[i, j] for i in range(n_cli) for j in range(n_fac)
+    }
+
+    demands_dict = {
+        i: demands[i] for i in range(n_cli)
+    }
+
+    facility_costs_dict = {
+        j: facility_costs[j] for j in range(n_fac)
+    }
+
+    #init the sets
+    model.I = pyo.Set(initialize=range(n_cli)) #client set
+    model.J = pyo.Set(initialize=range(n_fac)) #facility set
+    model.M = pyo.Param(initialize=1e6, mutable=True) #big-m
+
+    #init the parameters
+    model.c = pyo.Param(model.J, initialize=facility_costs_dict)
+    model.d = pyo.Param(model.I, model.J, initialize=dist_dict)
+    model.demand = pyo.Param(model.I, initialize=demands_dict)
+
+    #initialize the variables
+    model.x = pyo.Var(model.I, model.J, domain=pyo.Binary)
+    model.y = pyo.Var(model.J, domain=pyo.Binary)
+
+    #each client gets assigned
+    def assigned_rule(model, i):
+        return sum(model.x[i,:]) == 1
+    model.assign = pyo.Constraint(model.I, rule=assigned_rule)
+
+    #can only assign to facilities that are actually opened
+    def opened_rule(model, i, j):
+        return model.x[i, j] <= model.y[j]
+    model.open = pyo.Constraint(model.I, model.J, rule=opened_rule)
+
+    model.obj = pyo.Objective(
+        expr=sum(model.d[i, j] * model.demand[i] * model.x[i, j] for i in model.I for j in model.J) + sum(model.c[j] * model.y[j] for j in model.J),
+        sense = pyo.minimize
+    )
+
+    #initiate the warm start
+    y0 = np.asarray(pred_opened).astype(np.int32).reshape(-1)
+    a0 = np.asarray(pred_assignment).astype(np.int64).reshape(-1)
+    x0 = np.zeros((n_cli, n_fac), dtype=np.int32)
+    x0[np.arange(n_cli), a0] = 1
+
+    for j in model.J:
+        model.y[j].value = int(y0[j])
+    for i in model.I:
+        for j in model.J:
+            model.x[i, j].value = int(x0[i, j])
+
+    #solve and return the solution
+    solver_model = pyo.SolverFactory(solver)
+    result = solver_model.solve(model)
+
+    x_solution = np.asarray([[pyo.value(model.x[i, j]) for j in model.J] for i in model.I], dtype=np.float32)
+    open_facilities = np.asarray([pyo.value(model.y[j]) for j in model.J], dtype=np.float32)
+    assignments = np.argmax(x_solution, axis=1)
+    sol_facility_costs = np.sum(facility_costs * open_facilities)
+    sol_assignment_cost = np.sum((dist * x_solution) * demands[:, None])
+
+
+    return UncapSolution(
+        open_facilities=open_facilities,
+        client_assignment=assignments,
+        opening_costs=sol_facility_costs,
+        assignment_cost=sol_assignment_cost,
+        total_cost=sol_facility_costs + sol_assignment_cost,
+        solve_time=result["Solver"][0]["Time"]
+    )
+
 def solve_dual_exact(problem: UncapInstance, solver: str = "glpk") -> UncapSolution:
     dist = np.asarray(problem.dist_matrix, dtype=np.float64)
     demands = np.asarray(problem.demands, dtype=np.float64)
