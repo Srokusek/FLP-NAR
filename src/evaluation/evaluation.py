@@ -70,7 +70,7 @@ def create_test_datasets(
             collate_fn=test_collate_fn,
         )
 
-        test_datasets[(n_fac, n_cli)] = {"dataset":dataset, "loader":loader}
+        test_datasets[(n_cli, n_fac)] = {"dataset":dataset, "loader":loader}
 
     return test_datasets
 
@@ -82,7 +82,7 @@ def run_inference(
     all_results = []
     for (n_cli, n_fac), data in datasets.items():
         print(f"evaluating {n_cli}x{n_fac}")
-        for batch in data["laoder"]:
+        for batch in data["loader"]:
             batch = batch.to(trainer.device)
             all_results.extend(trainer.model.inference(batch, repair=repair))
 

@@ -229,3 +229,5 @@ def generate_training_validation_datasets(
             val_datasets[i], batch_size=batch_size, shuffle=False, collate_fn=collate_fn
         )
     val_loaders_by_scale.update(val_extra_loaders)
+
+    return train_loaders, val_loaders_by_scale
