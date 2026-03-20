@@ -5,9 +5,13 @@ from itertools import chain
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 import torch
+from torch.utils.data import DataLoader
+from pathlib import Path
 
-from ..data.data import LossConfig, UncapInstance
+from ..data.data import LossConfig, UncapInstance, UncapGeneratorConfig, ConstantConfig, NormalConfig, UniformConfig
 from ..models.processors import Reasoner
+from ..data.prepare_data import GenerateDataset
+from ..utils.collate_fn import collate_fn
 
 class Trainer:
     #class that handles all the training of the Reasoner model
@@ -158,3 +162,70 @@ class Trainer:
 
         print(f"\nBest val loss: {self.best_val_loss:.4f}")
         return self.history
+    
+def generate_training_validation_datasets(
+        train_configs: list,
+        val_configs: list,
+        batch_size: int,
+):
+    train_datasets = []
+    val_datasets = []
+
+    train_path = Path(__file__).resolve().parent.parent / "datasets" / "training"
+
+    #create the generator configs
+    for cfg in train_configs:
+        gen_cfg = UncapGeneratorConfig(
+            n_cli=cfg["n_cli"],
+            n_fac=cfg["n_fac"],
+            seed=33,
+            demand_config=ConstantConfig(1), #training only on the constand demand, otherwise traces are wrong
+            coords_config=NormalConfig(mean=0.5, std=0.5),
+        )
+
+        dataset = GenerateDataset(
+            generator_config=gen_cfg,
+            n_samples=cfg["n_samples"],
+            cache_dir= train_path / f"train_{cfg["n_cli"]}_{cfg["n_fac"]}"
+        )
+        dataset.prepare_data()
+        #split, not actually necessary if seperate valdiation datasets are created but keep for now
+        n_train = int(0.75 * len(dataset))
+        n_val = len(dataset) - n_train
+        t, v = torch.utils.data.random_split(dataset, [n_train, n_val])
+        train_datasets.append(t)
+        val_datasets.append(v)
+        print(f"  {cfg['n_fac']}x{cfg['n_cli']}: {n_train} train / {n_val} val")
+
+    #generate the train loaders (one per size)
+    train_loaders = [
+        DataLoader(dataset, batch_size=min(batch_size, cfg["n_samples"]), shuffle=True, collate_fn=collate_fn) for dataset in train_datasets
+    ]
+
+    #create additional purely valdiation datasets/loaders
+    val_extra_loaders = {}
+    for cfg in val_configs:
+        gen_cfg = UncapGeneratorConfig(
+            n_cli=cfg["n_fac"], n_cli=["n_cli"], seed=7777,
+            demand_config=ConstantConfig(1),
+            facility_cost_config=UniformConfig(0, 1),
+            coords_config=NormalConfig(mean=0.5, std=0.5),
+        )
+        dataset = GenerateDataset(gen_cfg, 
+                                  n_samples=cfg["n_samples"],
+                                  cache_dir=train_path / f"val_{cfg["n_cli"]}_{cfg["n_fac"]}"
+        )
+        dataset.prepare_data()
+        loader = DataLoader(dataset, batch_size=min(batch_size, cfg["n_samples"]), shuffle=False, collate_fn=collate_fn)
+        key = f"{cfg["n_cli"]}x{cfg["n_fac"]}"
+        val_extra_loaders[key] = loader
+        print(f"val scale {key}: {len(dataset)} samples")
+
+    #combine train-split validation with the extra val loaders
+    val_loaders_by_scale = {}
+    for i, cfg in enumerate(train_configs):
+        key = f"{cfg["n_cli"]}x{cfg["n_fac"]}"
+        val_loaders_by_scale[key] = DataLoader(
+            val_datasets[i], batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+        )
+    val_loaders_by_scale.update(val_extra_loaders)
