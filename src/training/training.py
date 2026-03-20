@@ -206,7 +206,7 @@ def generate_training_validation_datasets(
     val_extra_loaders = {}
     for cfg in val_configs:
         gen_cfg = UncapGeneratorConfig(
-            n_cli=cfg["n_fac"], n_cli=["n_cli"], seed=7777,
+            n_fac=cfg["n_fac"], n_cli=["n_cli"], seed=7777,
             demand_config=ConstantConfig(1),
             facility_cost_config=UniformConfig(0, 1),
             coords_config=NormalConfig(mean=0.5, std=0.5),
