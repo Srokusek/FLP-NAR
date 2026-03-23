@@ -9,7 +9,6 @@ from torch.utils.data import DataLoader
 from pathlib import Path
 
 from ..data.data import LossConfig, UncapInstance, UncapGeneratorConfig, ConstantConfig, NormalConfig, UniformConfig
-from ..models.processors import Reasoner
 from ..data.prepare_data import GenerateDataset
 from ..utils.collate_fn import collate_fn
 
