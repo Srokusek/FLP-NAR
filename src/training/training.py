@@ -180,6 +180,7 @@ def generate_training_validation_datasets(
             seed=33,
             demand_config=ConstantConfig(1), #training only on the constand demand, otherwise traces are wrong
             coords_config=NormalConfig(mean=0.5, std=0.5),
+            facility_cost_config=UniformConfig(min=0, max=1)
         )
 
         dataset = GenerateDataset(
@@ -209,6 +210,7 @@ def generate_training_validation_datasets(
             demand_config=ConstantConfig(1),
             facility_cost_config=UniformConfig(0, 1),
             coords_config=NormalConfig(mean=0.5, std=0.5),
+            facility_cost_config=UniformConfig(min=0, max=1)
         )
         dataset = GenerateDataset(gen_cfg, 
                                   n_samples=cfg["n_samples"],
