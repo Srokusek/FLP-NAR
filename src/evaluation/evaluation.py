@@ -57,7 +57,7 @@ def create_test_datasets(
         )
 
         dataset = GenerateDataset(
-            config = config,
+            generator_config = config,
             n_samples=n_samples,
             cache_dir= path / f"test_{n_cli}_{n_fac}"
         )
