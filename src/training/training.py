@@ -186,7 +186,7 @@ def generate_training_validation_datasets(
         dataset = GenerateDataset(
             generator_config=gen_cfg,
             n_samples=cfg["n_samples"],
-            cache_dir= train_path / f"train_{cfg["n_cli"]}_{cfg["n_fac"]}"
+            cache_dir= train_path / f"train_{cfg["n_cli"]}x{cfg["n_fac"]}"
         )
         dataset.prepare_data()
         #split, not actually necessary if seperate valdiation datasets are created but keep for now
@@ -215,7 +215,7 @@ def generate_training_validation_datasets(
         )
         dataset = GenerateDataset(gen_cfg, 
                                   n_samples=cfg["n_samples"],
-                                  cache_dir=train_path / f"val_{cfg["n_cli"]}_{cfg["n_fac"]}"
+                                  cache_dir=train_path / f"val_{cfg["n_cli"]}x{cfg["n_fac"]}"
         )
         dataset.prepare_data()
         loader = DataLoader(dataset, batch_size=min(batch_size, cfg["n_samples"]), shuffle=False, collate_fn=collate_fn)

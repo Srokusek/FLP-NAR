@@ -59,7 +59,7 @@ def create_test_datasets(
         dataset = GenerateDataset(
             generator_config = config,
             n_samples=n_samples,
-            cache_dir= path / f"test_{n_cli}_{n_fac}"
+            cache_dir= path / f"test_{n_cli}x{n_fac}"
         )
         dataset.prepare_test_data(exact=exact)
 
@@ -100,6 +100,9 @@ def run_inference(
             "opt_gap_pct": (r["opt_ratio"] - 1.0) * 100,
             "n_fac_opened": int(r["repaired_opened"].sum()),
             "n_fac_target": int((r["y_target"] > 0.5).sum()),
+            "solution_time": r["solution_time"],
+            "exact_time": r["test_sample"].exact.solve_time,
+            "dual_time": r["test_sample"].jv.solve_time,
         }
         for r in all_results
     ])
