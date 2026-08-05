@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+.ipynb_checkpoints/
+/notebooks/data/
+/notebooks/data_hidden/
+/outputs/
+/notebooks/checkpoints/*
+!/notebooks/checkpoints/pretrained_model.pt
