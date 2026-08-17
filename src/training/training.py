@@ -192,10 +192,13 @@ def generate_training_validation_datasets(
         #split, not actually necessary if seperate valdiation datasets are created but keep for now
         n_train = int(0.75 * len(dataset))
         n_val = len(dataset) - n_train
-        t, v = torch.utils.data.random_split(dataset, [n_train, n_val])
-        train_datasets.append(t)
-        val_datasets.append(v)
-        print(f"  {cfg['n_fac']}x{cfg['n_cli']}: {n_train} train / {n_val} val")
+        #UPDATE: do not split, use all for training and generate val samples independetly
+        # t, v = torch.utils.data.random_split(dataset, [n_train, n_val])
+        # train_datasets.append(t)
+        # val_datasets.append(v)
+        # print(f"  {cfg['n_fac']}x{cfg['n_cli']}: {n_train} train / {n_val} val")
+        train_datasets.append(dataset)
+        print(f"{cfg['n_fac']}x{cfg['n_cli']}: {len(dataset)} train")
 
     #generate the train loaders (one per size)
     train_loaders = [
@@ -224,12 +227,13 @@ def generate_training_validation_datasets(
         print(f"val scale {key}: {len(dataset)} samples")
 
     #combine train-split validation with the extra val loaders
+    #UPDATE: do not combine, use the training set fully and val set is generated separately
     val_loaders_by_scale = {}
-    for i, cfg in enumerate(train_configs):
-        key = f"{cfg["n_cli"]}x{cfg["n_fac"]}"
-        val_loaders_by_scale[key] = DataLoader(
-            val_datasets[i], batch_size=batch_size, shuffle=False, collate_fn=collate_fn
-        )
+    # for i, cfg in enumerate(train_configs):
+    #     key = f"{cfg["n_cli"]}x{cfg["n_fac"]}"
+    #     val_loaders_by_scale[key] = DataLoader(
+    #         val_datasets[i], batch_size=batch_size, shuffle=False, collate_fn=collate_fn
+    #     )
     val_loaders_by_scale.update(val_extra_loaders)
 
     return train_loaders, val_loaders_by_scale

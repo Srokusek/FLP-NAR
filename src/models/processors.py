@@ -159,8 +159,10 @@ class combined_processor(nn.Module):
         return graph
 
 class simple_processor(nn.Module):
-    def __init__(self, hidden_dim):
+    def __init__(self, hidden_dim, mixing: bool = True):
         super().__init__()
+
+        self.mixing = mixing
 
         aggregation = aggr.MultiAggregation(["min", "max"])
 
@@ -322,7 +324,7 @@ class simple_processor(nn.Module):
 class processor(nn.Module):
     def __init__(self, hidden_dim, mixing: bool = True):
         super().__init__()
-        self.processor = simple_processor(hidden_dim)
+        self.processor = simple_processor(hidden_dim, mixing=mixing)
 
     def forward(self, graph, masks: dict = None):
         return self.processor(graph, masks)

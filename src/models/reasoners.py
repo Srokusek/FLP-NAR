@@ -8,10 +8,18 @@ import time
 from .processors import processor
 
 class Reasoner(nn.Module):
-    def __init__(self, hidden_dim, tf_prob: float = 0.5):
+    def __init__(
+        self,
+        hidden_dim,
+        tf_prob: float = 0.5,
+        opt_feasibility_weight: float = 1.0,
+    ):
         super().__init__()
         self.tf_prob = tf_prob
         self.eps = 1e-8
+        if opt_feasibility_weight < 0:
+            raise ValueError("opt_feasibility_weight must be non-negative")
+        self.opt_feasibility_weight = opt_feasibility_weight
 
         #encoders
         self.x_res_encoder = nn.Sequential(
@@ -170,6 +178,54 @@ class Reasoner(nn.Module):
         total_cost = facility_cost + client_cost
         return total_cost.unsqueeze(-1), assignment  # [B, 1]
 
+    def relaxed_optimum_loss(self, batch: HeteroData, x_logits, y_logits):
+        """Differentiable LP-style surrogate for uncapacitated facility location.
+
+        Assignment probabilities satisfy sum_j x_ij = 1 by construction. The
+        x_ij <= y_j constraints are encouraged with a quadratic penalty.
+        """
+        has_batch = hasattr(batch["y"], "batch")
+        if has_batch:
+            n_samples = int(batch["y"].batch.max().item()) + 1
+            n_fac = int((batch["y"].batch == 0).sum().item())
+            n_cli = int((batch["alpha"].batch == 0).sum().item())
+        else:
+            n_samples = 1
+            n_fac = batch["y"].x.shape[0]
+            n_cli = batch["alpha"].x.shape[0]
+
+        expected_x = n_samples * n_cli * n_fac
+        expected_y = n_samples * n_fac
+        if x_logits.numel() != expected_x or y_logits.numel() != expected_y:
+            raise ValueError(
+                "relaxed_optimum_loss expects every sample in a batch to have "
+                "the same number of clients and facilities"
+            )
+
+        assignment_prob = torch.softmax(
+            x_logits.reshape(n_samples, n_cli, n_fac), dim=-1
+        )
+        open_prob = torch.sigmoid(y_logits.reshape(n_samples, n_fac))
+
+        facility_costs = batch["y"].f_costs.reshape(n_samples, n_fac)
+        weighted_distances = (batch["x"].dist * batch["x"].demands).reshape(
+            n_samples, n_cli, n_fac
+        )
+
+        facility_cost = (open_prob * facility_costs).sum(dim=-1)
+        assignment_cost = (assignment_prob * weighted_distances).sum(dim=(-1, -2))
+        relaxed_cost = facility_cost + assignment_cost
+
+        # LP linking constraint: an assignment may only use an open facility.
+        violation = torch.relu(assignment_prob - open_prob.unsqueeze(1))
+        feasibility_loss = violation.square().mean(dim=(-1, -2))
+
+        optimum = batch.optimum.reshape(-1).clamp_min(self.eps)
+        normalized_cost = relaxed_cost / optimum
+        return (
+            normalized_cost + self.opt_feasibility_weight * feasibility_loss
+        ).mean()
+
     def repaired_mask_to_solution(self, batch: HeteroData, masks):
         #solution cost computation which implements a simple repair algorithm,
         #which prevents opening facilities to which no clients get assigned to
@@ -252,6 +308,8 @@ class Reasoner(nn.Module):
         optimum_loss = 0.0
         all_x_res_loss = []
         all_y_res_loss = []
+        terminal_x_logits = None
+        terminal_y_logits = None
 
         #init masks for tight facilities/clients
         masks = {
@@ -376,6 +434,22 @@ class Reasoner(nn.Module):
             #decode into algorithm steps
             preds = self._decode_step(batch)
 
+            if has_variable_T:
+                # Keep the prediction at each sample's final valid timestep.
+                # torch.where preserves the gradient from the selected logits.
+                if terminal_x_logits is None:
+                    terminal_x_logits = torch.zeros_like(preds["x"])
+                    terminal_y_logits = torch.zeros_like(preds["y"])
+                terminal_samples = t_lengths == (t + 1)
+                terminal_x_mask = terminal_samples[batch["x"].batch].unsqueeze(-1)
+                terminal_y_mask = terminal_samples[batch["y"].batch].unsqueeze(-1)
+                terminal_x_logits = torch.where(
+                    terminal_x_mask, preds["x"], terminal_x_logits
+                )
+                terminal_y_logits = torch.where(
+                    terminal_y_mask, preds["y"], terminal_y_logits
+                )
+
             #save losses with time-step masking for batched variable-T data
             if has_variable_T:
                 #create masks for nodes belonging to samples with valid timestep t
@@ -449,13 +523,20 @@ class Reasoner(nn.Module):
         y_res_loss = torch.stack(all_y_res_loss).mean()
 
         #compute the optimum gap at the last prediction
-        #total_cost = self.convert_to_solution(batch, preds["x"], preds["y"])
         total_cost, _ = self.mask_to_solution(batch, masks)
         optimum_diff = (total_cost / batch.optimum).mean()  #mean across batch
         dual_diff = (total_cost / batch.dual_solution).mean()  #mean across batch
 
-        #optimum_loss = self._mse(total_cost, batch.optimum) #it's okay to use mse here, since the cost will never be lower than the optimum
-        optimum_loss = self._smoothl1(total_cost, batch.optimum) #it's okay to use mse here, since the cost will never be lower than the optimum
+        # Use a differentiable relaxation for training. Keep the discrete cost
+        # above only as an evaluation metric.
+        if has_variable_T:
+            optimum_loss = self.relaxed_optimum_loss(
+                batch, terminal_x_logits, terminal_y_logits
+            )
+        else:
+            optimum_loss = self.relaxed_optimum_loss(
+                batch, preds["x"], preds["y"]
+            )
         return {
             "alpha_loss": alpha_loss,
             "beta_loss": beta_loss,
