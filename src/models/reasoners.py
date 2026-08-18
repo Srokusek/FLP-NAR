@@ -614,28 +614,42 @@ class Reasoner(nn.Module):
 
         solution_time = time.time() - t0
 
+        target_solution = (
+            batch.sample.exact
+            if batch.sample.exact is not None
+            else batch.sample.jv
+        )
+        result_masks = {
+            name: mask.detach().cpu()
+            for name, mask in masks.items()
+        }
+
         #collect results
         results = {
             "y_res": prev_y_res.squeeze(-1).cpu().numpy(),
             "x_res": prev_x_res.squeeze(-1).cpu().numpy(),
-            "y_target": batch.sample.exact.open_facilities,
-            "x_target": batch.sample.exact.client_assignment,
+            "y_target": target_solution.open_facilities,
+            "x_target": target_solution.client_assignment,
             "x_res_target": batch.sample.jv.client_assignment,
             "y_res_target": batch.sample.jv.open_facilities,
             "opened": masks["opened_facilities"].cpu().numpy(),
             "repaired_opened": repaired_opened_facilities.cpu().numpy()[0] if repair else None,
             "assignment": pred_assignment.cpu().numpy(),
             "pred_cost": total_cost.squeeze().item(),
-            "optimum": batch.sample.exact.total_cost,
             "dual_bound": batch.sample.jv.total_cost,
-            "opt_ratio": (total_cost/batch.sample.exact.total_cost).squeeze().item(),
             "dual_ratio": (total_cost/batch.sample.jv.total_cost).squeeze().item(),
             "n_fac": n_fac,
             "n_cli": n_cli,
-            "masks": masks,
+            "masks": result_masks,
             "solution_time": solution_time,
             "test_sample": batch.sample,
         }
+
+        if batch.sample.exact is not None:
+            results.update({
+                "optimum": batch.sample.exact.total_cost,
+                "opt_ratio": (total_cost / batch.sample.exact.total_cost).squeeze().item(),
+            })
 
         #restore sample into original form
         batch["x"].x = x_res_trace

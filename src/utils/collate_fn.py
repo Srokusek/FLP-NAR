@@ -80,8 +80,11 @@ def collate_fn(batch):
     return batched 
 
 def test_collate_fn(batch):
-    #colalte function made especially to work with test samples (no padding needed, only passing one sample within a batch)
+    # Collate function made especially to work with test samples (no padding
+    # needed, only passing one sample within a batch). Return a clone so that
+    # HeteroData.to(), which mutates tensor attributes in place, cannot move
+    # the dataset's stored sample to the inference device.
     if isinstance(batch, list):
         if len(batch) != 1:
             raise ValueError(f"test_collate_fn expects batch_size=1, got {len(batch)}")
-    return batch[0]
+    return batch[0].clone()
