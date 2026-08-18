@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import numpy as np
-from typing import Tuple, Callable, Dict
+from typing import Tuple, Callable, Dict, Optional
 import torch
 
 @dataclass
@@ -40,7 +40,7 @@ class JVTrace:
 @dataclass
 class TestSample:
     instance: UncapInstance
-    exact: UncapSolution
+    exact: Optional[UncapSolution]
     jv: UncapSolution
 
 @dataclass

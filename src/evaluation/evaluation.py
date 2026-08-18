@@ -23,7 +23,7 @@ def create_test_datasets(
         sizes: list[tuple[int, int]], #list of tuples in the form (n_cli, n_fac)
         n_samples: int, #number of samples to generate for each of the sample size
         type: str, #allows different distributions of data created (specifically by changing the distance calculation)
-        exact: bool = True, #set to False if generating large instance -> only use the approximation Heuristic
+        exact: bool = True, #set to False if generating large instance -> only use the approximation algorithm
         base_seed = 9999,
 ):
     test_datasets = {}
@@ -86,25 +86,32 @@ def run_inference(
             batch = batch.to(trainer.device)
             all_results.extend(trainer.model.inference(batch, repair=repair))
 
-    #collect all resuts in a dataframe
-    results_df = pd.DataFrame([
-        {
+    #collect all results in a dataframe
+    result_rows = []
+    for r in all_results:
+        row = {
             "size": f"{r['n_fac']}x{r['n_cli']}",
             "n_fac": r["n_fac"],
             "n_cli": r["n_cli"],
             "predicted": r["pred_cost"],
-            "optimum": r["optimum"],
             "dual_bound": r["dual_bound"],
-            "opt_ratio": r["opt_ratio"],
             "dual_ratio": r["dual_ratio"],
-            "opt_gap_pct": (r["opt_ratio"] - 1.0) * 100,
             "n_fac_opened": int(r["repaired_opened"].sum()),
             "n_fac_target": int((r["y_target"] > 0.5).sum()),
             "solution_time": r["solution_time"],
-            "exact_time": r["test_sample"].exact.solve_time,
             "dual_time": r["test_sample"].jv.solve_time,
         }
-        for r in all_results
-    ])
+
+        if "optimum" in r:
+            row.update({
+                "optimum": r["optimum"],
+                "opt_ratio": r["opt_ratio"],
+                "opt_gap_pct": (r["opt_ratio"] - 1.0) * 100,
+                "exact_time": r["test_sample"].exact.solve_time,
+            })
+
+        result_rows.append(row)
+
+    results_df = pd.DataFrame(result_rows)
 
     return results_df

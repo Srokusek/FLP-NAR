@@ -73,7 +73,11 @@ class GenerateDataset(Dataset):
         return samples
 
     def prepare_test_data(self, exact:bool=True):
-        cache_file = os.path.join(self.cache_dir, f"{self.n_samples}_{self.generator_config.n_cli}_{self.generator_config.n_fac}_test.pkl")
+        cache_suffix = "test" if exact else "test_jv"
+        cache_file = os.path.join(
+            self.cache_dir,
+            f"{self.n_samples}_{self.generator_config.n_cli}_{self.generator_config.n_fac}_{cache_suffix}.pkl",
+        )
 
         os.makedirs(self.cache_dir, exist_ok=True)
 
@@ -83,7 +87,7 @@ class GenerateDataset(Dataset):
                 self.data = pickle.load(f)
         else:
             print("generating instances")
-            samples = self.generate_test_samples()
+            samples = self.generate_test_samples(exact=exact)
             self.data = [self.process_test_sample(sample) for sample in samples]
             with open(cache_file, "wb") as f:
                 pickle.dump(self.data, f)
@@ -99,7 +103,7 @@ class GenerateDataset(Dataset):
             instance = self.generator(config)
 
             #get the exact solution if selected
-            exact_solution = self.primal_solver(instance)
+            exact_solution = self.primal_solver(instance) if exact else None
 
             #get jv approximation solution
             jv_solution = self.traces_solver(instance, with_traces=False) #only return the solution (no traces) to save disk space
