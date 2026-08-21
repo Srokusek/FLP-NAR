@@ -8,3 +8,7 @@ __pycache__/
 /notebooks/checkpoints/*
 !/notebooks/checkpoints/pretrained_model.pt
 datasets
+/tests/
+/tables/
+figures/
+notebooks/visualizations.ipynb
